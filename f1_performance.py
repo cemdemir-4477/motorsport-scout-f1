@@ -141,6 +141,36 @@ def calculate_sector_zscores(driver_laps: pd.DataFrame, ref_driver_laps: pd.Data
         
     return z_scores
 
+def calculate_theoretical_optimal(clean_laps_df: pd.DataFrame, sector_columns: list) -> tuple:
+    """
+    Her sektörde pilotun attığı en iyi (minimum) zamanı bulup toplayarak teorik optimal turu hesaplar.
+    Gerçek en iyi turuyla arasındaki farkı saniye cinsinden (gelişim potansiyeli) döndürür.
+    
+    Args:
+        clean_laps_df (pd.DataFrame): Pilotun temiz turları.
+        sector_columns (list): Sektör sütun isimleri (örn. ['Sector1Time', 'Sector2Time', 'Sector3Time']).
+        
+    Returns:
+        tuple: (teorik_optimal_saniye, gercek_en_iyi_saniye, gelisim_potansiyeli_saniye)
+    """
+    if clean_laps_df.empty:
+        return np.nan, np.nan, np.nan
+        
+    theoretical_optimal_time = 0.0
+    for col in sector_columns:
+        if col in clean_laps_df.columns:
+            # Sektörlerdeki en iyi zamanı (minimum) bul ve saniyeye çevir
+            best_sector_sec = clean_laps_df[col].dt.total_seconds().min()
+            theoretical_optimal_time += best_sector_sec
+            
+    # Gerçek en iyi tur (saniye cinsinden)
+    actual_best_time = clean_laps_df['LapTime'].dt.total_seconds().min()
+    
+    # Gelişim potansiyeli (Gerçek - Teorik Optimal)
+    development_potential = actual_best_time - theoretical_optimal_time
+    
+    return theoretical_optimal_time, actual_best_time, development_potential
+
 def main():
     print("Veri indiriliyor...")
     # 2024 Bahreyn Grand Prix'sini yükleyelim

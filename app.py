@@ -1,6 +1,7 @@
 import streamlit as st
 import fastf1
 import pandas as pd
+import numpy as np
 import os
 
 # Mevcut f1_performance.py dosyasındaki hesaplama fonksiyonlarını içe aktarıyoruz
@@ -9,7 +10,8 @@ from f1_performance import (
     calculate_pace_score,
     calculate_consistency_score,
     compare_drivers_ttest,
-    calculate_sector_zscores
+    calculate_sector_zscores,
+    calculate_theoretical_optimal
 )
 
 # Streamlit sayfası temel ayarları
@@ -22,14 +24,28 @@ fastf1.Cache.enable_cache('scratch/fastf1_cache')
 st.title("🏎️ Sürücü Performans Skoru")
 st.markdown("Bu uygulama, seçtiğiniz yarış ve iki pilot üzerinden temiz turları (medyan ± 1.5×IQR) filtreleyerek pace, tutarlılık ve sektör performanslarını istatistiksel olarak karşılaştırır.")
 
-# --- Cache'li Veri Yükleme Fonksiyonları ---
+# --- Yardımcı Fonksiyon: Başlık ve Bilgi İkonu ---
+def header_with_info(title, info_text, level="h3"):
+    """Belirtilen başlığın yanına bir info butonu (popover) ekler."""
+    # Sütunları başlığa göre boyutlandırmak için auto-width (layout) kullanımı
+    col1, col2 = st.columns([0.95, 0.05])
+    with col1:
+        if level == "h2":
+            st.subheader(title)
+        elif level == "h3":
+            st.markdown(f"### {title}")
+        else:
+            st.markdown(f"**{title}**")
+    with col2:
+        with st.popover("ℹ️"):
+            st.markdown(info_text)
 
+# --- Cache'li Veri Yükleme Fonksiyonları ---
 @st.cache_data(show_spinner=False)
 def get_season_schedule(year):
     """Belirtilen yılın yarış takvimini çeker."""
     try:
         schedule = fastf1.get_event_schedule(year)
-        # Sadece test (testing) olmayan gerçek hafta sonlarını alalım
         schedule = schedule[schedule['EventFormat'] != 'testing']
         return schedule
     except Exception as e:
@@ -48,16 +64,9 @@ def load_session(year, event_name):
 # --- YAN MENÜ (SIDEBAR) ---
 st.sidebar.header("⚙️ Ayarlar")
 
-# 1. Sezon Yılı Seçimi
-selected_year = st.sidebar.selectbox(
-    "Sezon Seçin", 
-    list(range(2024, 2017, -1)), 
-    index=0
-)
+selected_year = st.sidebar.selectbox("Sezon Seçin", list(range(2024, 2017, -1)), index=0)
 
-# 2. Yarış Seçimi
 schedule = get_season_schedule(selected_year)
-
 if schedule.empty:
     st.sidebar.error("Takvim verisi çekilemedi.")
     events = []
@@ -66,7 +75,6 @@ else:
 
 selected_event = st.sidebar.selectbox("Yarış Seçin", events)
 
-# Pilot Listesini Çekme (Yan menüde veriyi önceden yüklemek zorundayız)
 driver_options = []
 session = None
 
@@ -84,10 +92,8 @@ if selected_event:
                     except Exception:
                         continue
 
-# 3. Pilot Seçimleri
 if driver_options:
     driver1 = st.sidebar.selectbox("Pilot 1", driver_options, index=0)
-    # Eğer birden fazla pilot varsa ikinciyi otomatik farklı seç
     driver2_default_index = 1 if len(driver_options) > 1 else 0
     driver2 = st.sidebar.selectbox("Pilot 2", driver_options, index=driver2_default_index)
 else:
@@ -95,12 +101,9 @@ else:
     if selected_event:
         st.sidebar.error("Bu yarış için pilot listesi bulunamadı.")
 
-# 4. Analiz Butonu
 analyze_btn = st.sidebar.button("Analiz Et", type="primary")
 
-
 # --- ANA EKRAN ANALİZ BÖLÜMÜ ---
-
 if analyze_btn:
     if not driver1 or not driver2:
         st.warning("Lütfen iki pilot seçtiğinizden emin olun.")
@@ -141,10 +144,19 @@ if analyze_btn:
                     sec_z_d1 = calculate_sector_zscores(clean_d1, clean_d1)
                     sec_z_d2 = calculate_sector_zscores(clean_d2, clean_d1)
                     
+                    # 6. Teorik Optimal Tur Analizi
+                    sector_cols = ['Sector1Time', 'Sector2Time', 'Sector3Time']
+                    theo_opt_d1, act_best_d1, pot_d1 = calculate_theoretical_optimal(clean_d1, sector_cols)
+                    theo_opt_d2, act_best_d2, pot_d2 = calculate_theoretical_optimal(clean_d2, sector_cols)
+                    
                     
                     # --- SONUÇLARI GÖSTER ---
                     
-                    st.subheader("📊 Performans Tablosu")
+                    header_with_info(
+                        "📊 Performans Tablosu", 
+                        "Sektör z-skoru: Kaç standart sapma uzakta olduğunu gösterir, referans pilota (Pilot 1) göre normalize eder.",
+                        level="h2"
+                    )
                     
                     # Verileri Tablolaştırma
                     results = [
@@ -177,7 +189,13 @@ if analyze_btn:
                         st.warning(warning_msg)
                     
                     # P-Değeri Gösterimi
-                    st.subheader("🔬 İstatistiksel Karşılaştırma (Welch's t-test)")
+                    st.write("---")
+                    header_with_info(
+                        "🔬 İstatistiksel Karşılaştırma (Welch's t-test)",
+                        "0.05'in altı, farkın şans eseri olma ihtimalinin düşük olduğunu gösterir - ama küçük örneklemde temkinli yorumlanmalı.",
+                        level="h2"
+                    )
+                    
                     if pd.isna(p_val):
                          st.error("Hesaplama yapılamadı (Yeterli tur verisi yok).")
                     elif p_val < 0.05:
@@ -187,10 +205,10 @@ if analyze_btn:
                         
                     
                     # Bar Chart'lar ile Görselleştirme
+                    st.write("---")
                     st.subheader("📈 Görsel Karşılaştırma")
                     col1, col2 = st.columns(2)
                     
-                    # Grafikler için DF hazırlığı
                     df_charts = pd.DataFrame({
                         'Pilot': [driver1, driver2],
                         'Pace Skoru': [pace_d1, pace_d2],
@@ -198,14 +216,39 @@ if analyze_btn:
                     }).set_index('Pilot')
                     
                     with col1:
-                        st.markdown("**Pace Skoru (%)**")
+                        header_with_info("Pace Skoru (%)", "Medyan kullanıyoruz çünkü aykırı değerlere (pit, hata) karşı dayanıklı, ortalamadan daha güvenilir.", level="h3")
                         st.caption("Daha düşük = Daha hızlı (En hızlı tura yakın)")
                         st.bar_chart(df_charts['Pace Skoru'], use_container_width=True)
                         
                     with col2:
-                        st.markdown("**Tutarlılık Skoru (CV %)**")
+                        header_with_info("Tutarlılık Skoru (CV %)", "Varyasyon katsayısı, standart sapmayı ortalamaya bölerek farklı ölçeklerdeki tutarlılığı karşılaştırılabilir yapar.", level="h3")
                         st.caption("Daha düşük = Daha istikrarlı sürüş")
                         st.bar_chart(df_charts['Tutarlılık (CV)'], use_container_width=True)
+                        
+                    # 6. Teorik Optimal Tur Analizi Bölümü
+                    st.write("---")
+                    header_with_info(
+                        "⏱️ Teorik Optimal Tur Analizi", 
+                        "Her sektördeki en iyi performansın toplamı - pilotun ulaşabileceği teorik alt sınır.",
+                        level="h2"
+                    )
+                    
+                    df_optimal = pd.DataFrame({
+                        'Pilot': [driver1, driver2],
+                        'Gerçek En Hızlı Tur (Sn)': [act_best_d1, act_best_d2],
+                        'Teorik Optimal Tur (Sn)': [theo_opt_d1, theo_opt_d2],
+                        'Gelişim Potansiyeli (Sn)': [pot_d1, pot_d2] # Gerçek - Teorik
+                    }).set_index('Pilot')
+                    
+                    col_opt1, col_opt2 = st.columns([0.6, 0.4])
+                    with col_opt1:
+                        st.markdown("**Tur Zamanları (Saniye)**")
+                        st.dataframe(df_optimal.style.format(precision=3), use_container_width=True)
+                        
+                    with col_opt2:
+                        st.markdown("**Gelişim Potansiyeli (Saniye)**")
+                        st.caption("Sektörleri birleştirmede yaşanan kayıp (Daha düşük = Tek turda daha verimli)")
+                        st.bar_chart(df_optimal['Gelişim Potansiyeli (Sn)'], use_container_width=True)
             
             except Exception as e:
                 st.error(f"Analiz sırasında beklenmeyen bir hata oluştu: {str(e)}")
